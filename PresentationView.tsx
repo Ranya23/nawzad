@@ -1,87 +1,110 @@
 import React, { useState, useEffect } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
+import { Document, Page, pdfjs } from 'react-pdf';
+import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
+import 'react-pdf/dist/esm/Page/TextLayer.css';
 
-// We assume this component receives the fileId from the FileUpload component
-export default function PresentationView({ fileId }: { fileId: string }) {
-  // Generate a random 7-character session ID when the presentation starts
+// Initialize the PDF.js worker (Required)
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+
+interface PresentationProps {
+  // Pass the raw download URL returned from your GAS upload script
+  fileUrl: string; 
+}
+
+export default function PresentationView({ fileUrl }: PresentationProps) {
   const [sessionId] = useState(() => Math.random().toString(36).substring(2, 9));
   const [currentSlide, setCurrentSlide] = useState(1);
+  const [numPages, setNumPages] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
   
-  // Your exact GAS URL
+  // Your GAS URL
   const GAS_URL = 'https://script.google.com/macros/s/AKfycbzBDSqTQIhasmBxibKtTGyUaPAmiHfxl1uuOlCJ8dON91iNogJRhskAbr8GtYNSRTba/exec';
-  
-  // The URL the phone will open. (Assumes you have a /remote route set up)
-  // In production, change 'window.location.origin' to your GitHub Pages URL
   const remoteUrl = `${window.location.origin}/remote?session=${sessionId}`;
 
+  // Poll GAS for slide changes
   useEffect(() => {
-    // Poll the GAS backend every 1.5 seconds to check for phone commands
+    // 1000ms polling is a good balance between responsiveness and not overwhelming GAS quota
     const pollInterval = setInterval(async () => {
       try {
         const response = await fetch(`${GAS_URL}?action=getState&sessionId=${sessionId}`);
         const data = await response.json();
         
         if (data && data.slide && data.slide !== currentSlide) {
+          // If the phone sends a command, update the local state to change the page
           setCurrentSlide(data.slide);
         }
-      } catch (error) {
-        console.error('Polling error:', error);
+      } catch (err) {
+        console.error('Polling error:', err);
       }
-    }, 1500);
+    }, 1000);
 
     return () => clearInterval(pollInterval);
   }, [sessionId, currentSlide]);
+
+  const onDocumentLoadSuccess = ({ numPages }: { numPages: number }) => {
+    setNumPages(numPages);
+    setError(null);
+  };
+
+  const onDocumentLoadError = (error: Error) => {
+    console.error('PDF load error:', error);
+    setError('Failed to load presentation. Ensure the Google Drive file is accessible.');
+  };
 
   return (
     <div className="flex h-screen w-full bg-gray-900 text-white font-sans">
       
       {/* MAIN SLIDE AREA */}
-      <div className="flex-1 flex flex-col items-center justify-center p-8 relative">
-        <div className="absolute top-4 left-4 bg-gray-800 px-4 py-2 rounded-lg text-sm font-semibold">
-          Slide: {currentSlide}
+      <div className="flex-1 flex flex-col items-center justify-center p-8 relative bg-black">
+        
+        {/* Slide Counter Overlay */}
+        <div className="absolute top-4 left-4 bg-gray-800/80 px-4 py-2 rounded-lg text-sm font-semibold z-10 backdrop-blur-sm">
+          Slide {currentSlide} {numPages && `of ${numPages}`}
         </div>
         
-        {/* 
-          NOTE ON RENDERING: 
-          For a quick serverless setup, we use Google Drive's native iframe. 
-          However, you cannot programmatically change pages inside a Drive iframe due to security rules. 
-          To make the slide actually change when `currentSlide` updates, you will eventually 
-          need to render the file using PDF.js or standard <img> tags instead of an iframe.
-        */}
-        <div className="w-full max-w-5xl aspect-video bg-gray-800 rounded-xl overflow-hidden shadow-2xl border border-gray-700 flex items-center justify-center">
-          {fileId ? (
-            <iframe 
-              src={`https://drive.google.com/file/d/${fileId}/preview`} 
-              className="w-full h-full border-0"
-              title="Presentation Slide"
-              allowFullScreen
-            />
+        {/* PDF Render Canvas */}
+        <div className="w-full h-full flex items-center justify-center overflow-hidden">
+          {error ? (
+            <p className="text-red-400">{error}</p>
           ) : (
-            <p className="text-gray-400">Loading presentation canvas...</p>
+            <Document
+              file={fileUrl} // Pass the Drive download URL here
+              onLoadSuccess={onDocumentLoadSuccess}
+              onLoadError={onDocumentLoadError}
+              className="max-h-full max-w-full flex justify-center shadow-2xl"
+              loading={<div className="animate-pulse text-gray-500">Loading document...</div>}
+            >
+              {/* The Page component redraws automatically when currentSlide changes */}
+              <Page 
+                pageNumber={currentSlide} 
+                renderTextLayer={false} 
+                renderAnnotationLayer={false}
+                // Automatically scale the page to fit the screen height, minus padding
+                height={window.innerHeight * 0.85} 
+                className="rounded-xl overflow-hidden"
+              />
+            </Document>
           )}
         </div>
       </div>
 
       {/* SIDEBAR: QR CODE & SESSION INFO */}
-      <div className="w-80 bg-gray-800 border-l border-gray-700 p-6 flex flex-col items-center justify-between">
+      <div className="w-80 bg-gray-800 border-l border-gray-700 p-6 flex flex-col items-center justify-between z-20 shadow-[-10px_0_30px_rgba(0,0,0,0.5)]">
         <div className="w-full flex flex-col items-center">
-          <h2 className="text-xl font-bold mb-2">NextSlide Remote</h2>
+          <h2 className="text-2xl font-bold mb-2">NextSlide</h2>
           <p className="text-sm text-gray-400 text-center mb-8">
-            Scan this QR code with your phone to control the presentation.
+            Scan to control presentation
           </p>
           
-          <div className="bg-white p-4 rounded-xl shadow-lg mb-6">
-            <QRCodeSVG value={remoteUrl} size={180} />
-          </div>
-          
-          <div className="w-full bg-gray-900 p-4 rounded-lg text-center font-mono text-sm break-all text-blue-400">
-            {remoteUrl}
+          <div className="bg-white p-4 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.1)] mb-6 transition-transform hover:scale-105">
+            <QRCodeSVG value={remoteUrl} size={200} level="H" />
           </div>
         </div>
         
-        <div className="w-full text-center">
-          <p className="text-xs text-gray-500 uppercase tracking-widest">Session ID</p>
-          <p className="font-mono text-lg font-bold">{sessionId}</p>
+        <div className="w-full text-center bg-gray-900 rounded-xl p-4 border border-gray-700">
+          <p className="text-xs text-gray-500 uppercase tracking-widest mb-1">Session ID</p>
+          <p className="font-mono text-xl font-bold text-blue-400 tracking-wider">{sessionId}</p>
         </div>
       </div>
 
